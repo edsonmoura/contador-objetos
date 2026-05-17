@@ -14,11 +14,3 @@
   run: |
     mkdir -p "$HOME/.buildozer/android/platform"
     ln -sfn "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
-        run: |
-          buildozer android debug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: contador-objetos-apk
-          path: bin/*.apk
