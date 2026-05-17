@@ -54,6 +54,13 @@ jobs:
         run: |
           mkdir -p "$HOME/.buildozer/android/platform"
           ln -sfn "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/tools/bin"
+          cat > "$HOME/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager" <<'EOF'
+          #!/usr/bin/env bash
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
+          exec "$SDKMANAGER" "$@"
+          EOF
+          chmod +x "$HOME/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager"
 
       - name: Download object detection model
         run: |
