@@ -2,46 +2,60 @@ from pathlib import Path
 import traceback
 
 import cv2
-import numpy as np
 from kivy.app import App
 from kivy.graphics.texture import Texture
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
-from kivy.uix.camera import Camera
-from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 
+from object_counter.blob_counter import (
+    detect_contrast_objects,
+    detect_dark_objects,
+    detect_light_objects,
+)
 from object_counter.counter import count_by_label, format_counts
 from object_counter.detector import YoloOnnxDetector, draw_detections
 
 
 LOG_PATH = Path("app_error.log")
 
+MODES = {
+    "beans": ("Feijao", "feijao", detect_dark_objects, 250),
+    "rice": ("Arroz", "arroz", detect_light_objects, 40),
+    "parts": ("Pecas", "peca", detect_contrast_objects, 120),
+    "dark": ("Escuros", "objeto escuro", detect_dark_objects, 800),
+    "yolo": ("YOLO", None, None, None),
+}
+
 
 def write_error_log(error: BaseException) -> None:
     LOG_PATH.write_text("".join(traceback.format_exception(error)), encoding="utf-8")
+
+
+def request_android_camera_permission() -> None:
+    try:
+        from android.permissions import Permission, request_permissions
+
+        request_permissions([Permission.CAMERA, Permission.WRITE_EXTERNAL_STORAGE])
+    except Exception:
+        pass
 
 
 class ObjectCounterLayout(BoxLayout):
     def __init__(self, **kwargs) -> None:
         super().__init__(orientation="vertical", spacing=8, padding=8, **kwargs)
 
-        self.detector = self._create_detector()
-        self.showing_result = False
-        self.camera = None
+        request_android_camera_permission()
 
-        self.preview_area = FloatLayout()
-        self.camera_error = self._create_camera()
-        self.result_preview = Image(
-            allow_stretch=True,
-            keep_ratio=True,
-            opacity=0,
-            size_hint=(1, 1),
-            pos_hint={"x": 0, "y": 0},
-        )
+        self.mode = "beans"
+        self.detector = self._create_detector()
+        self.last_photo_path = None
+
+        self.preview = Image(allow_stretch=True, keep_ratio=True)
         self.status = Label(
-            text=self._initial_status(),
+            text="Escolha o modo e toque em Tirar foto.",
             size_hint_y=None,
             height=150,
             halign="left",
@@ -49,29 +63,22 @@ class ObjectCounterLayout(BoxLayout):
         )
         self.status.bind(size=self._sync_label_text_size)
 
-        self.button = Button(
-            text="Contar",
+        self.mode_buttons = GridLayout(cols=5, size_hint_y=None, height=52, spacing=4)
+        for mode_key, mode_info in MODES.items():
+            button = Button(text=mode_info[0])
+            button.bind(on_press=lambda _button, key=mode_key: self.set_mode(key))
+            self.mode_buttons.add_widget(button)
+
+        self.capture_button = Button(
+            text="Tirar foto e contar",
             size_hint_y=None,
             height=56,
-            on_press=self.count_objects,
+            on_press=self.take_photo,
         )
 
-        if self.camera is None:
-            self.preview_area.add_widget(
-                Label(
-                    text="Camera nao disponivel neste computador.",
-                    halign="center",
-                    valign="middle",
-                )
-            )
-            self.button.disabled = True
-        else:
-            self.preview_area.add_widget(self.camera)
-
-        self.preview_area.add_widget(self.result_preview)
-
-        self.add_widget(self.preview_area)
-        self.add_widget(self.button)
+        self.add_widget(self.preview)
+        self.add_widget(self.mode_buttons)
+        self.add_widget(self.capture_button)
         self.add_widget(self.status)
 
     def _create_detector(self) -> YoloOnnxDetector | None:
@@ -80,69 +87,59 @@ class ObjectCounterLayout(BoxLayout):
         except (FileNotFoundError, cv2.error):
             return None
 
-    def _create_camera(self) -> str | None:
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.status.text = f"Modo selecionado: {MODES[mode][0]}"
+
+    def take_photo(self, _button: Button) -> None:
+        output_path = Path(App.get_running_app().user_data_dir) / "capture.jpg"
+        self.last_photo_path = output_path
+
         try:
-            self.camera = Camera(
-                play=True,
-                resolution=(640, 480),
-                size_hint=(1, 1),
-                pos_hint={"x": 0, "y": 0},
-            )
-            return None
+            from plyer import camera
+
+            camera.take_picture(str(output_path), self.on_photo_taken)
+            self.status.text = "Camera aberta. Tire a foto e confirme."
         except Exception as error:
             write_error_log(error)
-            self.camera = None
-            return str(error)
+            self.status.text = (
+                "Nao foi possivel abrir a camera nativa.\n"
+                f"{type(error).__name__}: {error}\n"
+                f"Detalhes em: {LOG_PATH}"
+            )
 
-    def _initial_status(self) -> str:
-        if self.camera_error:
-            return "Camera nao disponivel no desktop. Teste com: python scripts/count_image.py sua_foto.jpg"
-
-        model_path = Path("models/yolov8n.onnx")
-        if model_path.exists():
-            return "Aponte a camera para os objetos e toque em Contar."
-        return "Modelo nao encontrado. Rode: python scripts/download_model.py"
-
-    def _sync_label_text_size(self, instance: Label, size: tuple[int, int]) -> None:
-        instance.text_size = size
-
-    def count_objects(self, _button: Button) -> None:
-        if self.showing_result:
-            self.show_live_camera()
+    def on_photo_taken(self, photo_path: str | None) -> None:
+        path = Path(photo_path or self.last_photo_path or "")
+        if not path.exists():
+            self.status.text = "Foto nao encontrada. Tente novamente."
             return
 
-        if self.detector is None:
-            self.status.text = "Modelo nao carregado. Baixe o YOLOv8n ONNX primeiro."
-            return
+        self.analyze_image(path)
 
-        frame = self._camera_texture_to_frame()
+    def analyze_image(self, image_path: Path) -> None:
+        frame = cv2.imread(str(image_path))
         if frame is None:
-            self.status.text = "A camera ainda nao capturou uma imagem."
+            self.status.text = f"Nao foi possivel abrir a imagem: {image_path}"
             return
 
-        detections = self.detector.detect(frame)
-        counts, total = count_by_label(detections)
-        annotated_frame = draw_detections(frame, detections)
+        try:
+            detections = self.detect(frame)
+            counts, total = count_by_label(detections)
+            annotated = draw_detections(frame, detections)
+            self.preview.texture = self._frame_to_texture(annotated)
+            self.status.text = format_counts(counts, total)
+        except Exception as error:
+            write_error_log(error)
+            self.status.text = f"Erro ao contar: {type(error).__name__}: {error}"
 
-        self.result_preview.texture = self._frame_to_texture(annotated_frame)
-        self.result_preview.opacity = 1
-        self.showing_result = True
-        self.button.text = "Voltar para camera"
-        self.status.text = format_counts(counts, total)
+    def detect(self, frame):
+        if self.mode == "yolo":
+            if self.detector is None:
+                raise RuntimeError("Modelo YOLO ONNX nao encontrado no APK.")
+            return self.detector.detect(frame)
 
-    def _camera_texture_to_frame(self):
-        if self.camera is None:
-            return None
-
-        texture = self.camera.texture
-        if texture is None:
-            return None
-
-        width, height = map(int, texture.size)
-        pixels = np.frombuffer(texture.pixels, dtype=np.uint8)
-        rgba = pixels.reshape(height, width, 4)
-        rgba = np.flipud(rgba)
-        return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+        _title, label, detector_function, min_area = MODES[self.mode]
+        return detector_function(frame, min_area=min_area, label=label)
 
     def _frame_to_texture(self, frame_bgr):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -151,12 +148,8 @@ class ObjectCounterLayout(BoxLayout):
         texture.blit_buffer(flipped.tobytes(), colorfmt="rgb", bufferfmt="ubyte")
         return texture
 
-    def show_live_camera(self) -> None:
-        if self.showing_result:
-            self.result_preview.opacity = 0
-            self.showing_result = False
-            self.button.text = "Contar"
-            self.status.text = "Aponte a camera para os objetos e toque em Contar."
+    def _sync_label_text_size(self, instance: Label, size: tuple[int, int]) -> None:
+        instance.text_size = size
 
 
 class ObjectCounterApp(App):
