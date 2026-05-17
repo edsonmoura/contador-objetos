@@ -1,81 +1,18 @@
-name: Build Android APK
+[app]
+title = Contador de Objetos
+package.name = contadorobjetos
+package.domain = org.example
+source.dir = .
+source.include_exts = py,png,jpg,jpeg,kv,onnx
+version = 0.1.0
+requirements = python3,kivy,numpy,opencv,pillow
+orientation = portrait
+fullscreen = 0
+android.permissions = CAMERA,INTERNET
+android.api = 35
+android.minapi = 24
+android.archs = arm64-v8a
 
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip autoconf libtool pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
-            cmake libffi-dev libssl-dev
-
-      - name: Install Python build tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install buildozer cython
-
-      - name: Install Android build tools
-        run: |
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;25.2.9519653"
-          yes | sdkmanager --licenses
-
-      - name: Link Android SDK for Buildozer
-        run: |
-          mkdir -p "$HOME/.buildozer/android/platform"
-          ln -sfn "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/tools/bin"
-          cat > "$HOME/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager" <<'EOF'
-          #!/usr/bin/env bash
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
-          exec "$SDKMANAGER" "$@"
-          EOF
-          chmod +x "$HOME/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager"
-
-      - name: Download object detection model
-        run: |
-          python -m pip install -r requirements-model.txt
-          python scripts/download_model.py
-
-      - name: Build debug APK
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
-        run: |
-          buildozer android debug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: contador-objetos-apk
-          path: bin/*.apk
+[buildozer]
+log_level = 2
+warn_on_root = 1
